@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
-"""Patch an MS2131 firmware dump so the card captures true 2560x1440 @ 30 fps over USB 3.0.
+"""Patch an MS2131 firmware dump to add a 2560x1440 @ 30 fps USB mode.
+
+IMPORTANT: this patch alone does NOT give real 2560x1440 capture. With a 2560x1440@60 source the
+firmware halves the width before storing it, so the 2560x1440 frames contain 1280 real columns
+and 1280 interpolated ones. For real 2560x1440 use patch_real1440p.py, which builds on this
+patch. See the README.
 
 Usage:
     python patch_1440p.py <your_backup.bin> <patched_output.bin> [--no-sharpen]
 
   --no-sharpen   also turn off the chip's artificial sharpening filter in YUY2 mode
-                 (recommended: at 1:1 it produces harsh, dotted edges)
 
 The input must be a 64K dump of a firmware identical (in the patched places) to the one this
 was developed on: build string "Jul 22 2026", code length 0xf86b, code checksum 0x9c72.
@@ -17,7 +21,7 @@ What changes (file offset = ROM address + 0x30, the image starts with a 0x30-byt
   1. USB3 mode slot 12 (3840x2160 @ 18 fps) becomes 2560x1440 @ 30 fps
        - width/height tables for MJPEG and YUY2          file 0x018c, 0x01bc
        - the two UVC frame descriptors (YUY2 and MJPEG)   file 0x09f8, 0x0c21
-  2. Maximum internal (frame memory) image size 1920x1080 -> 2560x1440
+  2. Maximum stored image size 1920x1080 -> 2560x1440
        - init record of XDATA 0x268c                      file 0x344a
   3. Frame memory line pitch chosen per mode instead of the fixed boot value
        - the end of the routine that programs the frame memory read size (ROM 0xc263) jumps
@@ -28,26 +32,26 @@ What changes (file offset = ROM address + 0x30, the image starts with a 0x30-byt
      for MJPEG; the "mov r7,#0x01" operand becomes 0x00          file 0x4ddc
   5. Header and code checksums
 
-Why the pitch has to be dynamic
--------------------------------
-The frame memory holds 2^22 pixels. Registers 0xf597/0xf599 set how many pixel slots each
-line reserves, in units that depend on the input:
+Frame memory and pitch
+----------------------
+The stock firmware uses the frame memory as two buffers of 2^21 = 2,097,152 pixel slots; an image
+larger than one buffer wraps. Registers 0xf597/0xf599 hold half the
+number of slots reserved per line. The stock value 960 reserves 1920 slots per line, which
+leaves 1092 lines: exactly enough for 1920x1080.
 
-  - input pixel clock <= 170 MHz ("single-pixel" mode, e.g. 1080p60, or 4K60 4:2:0 which the
-    chip halves at its input): widths are in pixels, the pitch is in units of 2 pixels
-  - input pixel clock  > 170 MHz ("dual-pixel" mode, e.g. 2560x1440@60): widths are in units
-    of 2 pixels, the pitch is in units of 4 pixels
+When the HDMI input pixel clock is above 170 MHz (2560x1440@60), the firmware halves the
+stored width: the pre-scaler turns 2560 columns into 1280 and the output scaler doubles them
+back. A 1280-wide image only needs 1280 slots per line (register value 640), which leaves
+1638 lines, so 1440 lines can be kept. The appended routine picks:
 
-The stock value 960 means 1920 px in single-pixel mode (exactly a 1080p line) and 3840 px
-in dual-pixel mode, where it leaves room for only 1092 lines. A fixed 640 gives 2560 px and
-1638 lines in dual-pixel mode, but only 1280 px in single-pixel mode, so 1080p-class inputs
-overlap their own lines. The appended routine therefore picks:
+    W = stored width (register 0xf660), H = stored height (register 0xf662)
+    if W > 1920:                             pitch = W / 2   (exact fit)
+    elif H > 1092 and input above 170 MHz:   pitch = 640     (1280 slots, 1638 lines)
+    else:                                    pitch = 960     (stock)
 
-    W = frame memory width as programmed (register 0xf660, in the mode's width unit)
-    H = frame memory height (register 0xf662)
-    if W > 1920:                          pitch = W / 2   (exact fit; wide single-pixel input)
-    elif H > 1092 and dual-pixel mode:    pitch = 640     (2560 px, 1638 lines)
-    else:                                 pitch = 960     (stock)
+Known problem: an input at or below 170 MHz with more than 1092 lines (for example
+1920x1200@60 or 2560x1440@30) is not halved, so in the 2560x1440 mode the stored image can
+exceed the memory. That case was not tested and is expected to show a corrupted picture.
 """
 import hashlib
 import struct
@@ -93,7 +97,7 @@ def pitch_routine(org):
         # carry = (0x0444 < H)
         "c3", "7444", "9f", "7404", "9e",         # clr c / mov a,#44 / subb a,r7 / mov a,#04 / subb a,r6
         ("jnc", "write"),
-        # dual-pixel mode? same test the firmware uses at ROM 0x5a8d: carry = (pclk <= 0x4268)
+        # input above 170 MHz (width halved)? same test the firmware uses at ROM 0x5a8d: carry = (pclk <= 0x4268)
         "d3", "9022bd", "e0", "9468", "9022bc", "e0", "9442",
         ("jc", "write"),
         "7c02", "7d80",                           # r4:r5 = 640

@@ -11,10 +11,9 @@ Usage:
 Requires: pip install opencv-python-headless numpy   (and hidapi for --regs)
 Windows / DirectShow. Close OBS or anything else using the card first.
 
-Reading the --regs output: widths and the pitch are in chip units. With an HDMI input pixel
-clock up to 170 MHz one width unit is 1 pixel and one pitch unit is 2 pixels; above 170 MHz
-(for example 2560x1440@60) a width unit is 2 pixels and a pitch unit is 4 pixels. The script
-converts them to pixels for you.
+Reading the --regs output: "real picture stored" is the image the chip keeps in its frame
+memory, which is what the capture is built from whatever the USB frame size says. With an
+HDMI input above 170 MHz (for example 2560x1440@60) the firmware halves the stored width.
 """
 import os
 import sys
@@ -64,12 +63,11 @@ def read_regs():
         ms.close()
     in_w, in_h = int.from_bytes(inp[5:7], "big"), int.from_bytes(inp[7:9], "big")
     pclk = int.from_bytes(inp[9:11], "big") / 100
-    dual = pclk > 170.0
-    wu, pu = (2, 4) if dual else (1, 2)
-    mem_w, mem_h = int.from_bytes(mem[0:2], "little") * wu, int.from_bytes(mem[2:4], "little")
+    mem_w, mem_h = int.from_bytes(mem[0:2], "little"), int.from_bytes(mem[2:4], "little")
     p = int.from_bytes(pitch, "little")
-    return (f"input {in_w}x{in_h} {pclk:.1f} MHz ({'dual' if dual else 'single'}-pixel), frame memory {mem_w}x{mem_h}, "
-            f"pitch {p} units = {p * pu} px ({(1 << 22) // (p * pu)} lines), "
+    note = " (width halved: input above 170 MHz)" if pclk > 170.0 else ""
+    return (f"input {in_w}x{in_h} {pclk:.1f} MHz, real picture stored {mem_w}x{mem_h}{note}, "
+            f"pitch {p} = {p * 2} slots per line ({(1 << 21) // (p * 2)} lines fit), "
             f"limit {int.from_bytes(lim[:2], 'big')}x{int.from_bytes(lim[2:], 'big')}")
 
 

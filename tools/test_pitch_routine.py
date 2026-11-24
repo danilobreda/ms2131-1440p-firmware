@@ -69,21 +69,23 @@ def run(code, w_units, height, pclk):
 
 
 CASES = [
-    # (description, width as programmed, height, input pixel clock in 10 kHz, expected pitch)
-    ("1440p60 in (dual-pixel), 2560x1440 memory", 1280, 1440, 24151, 640),
-    ("1440p60 in (dual-pixel), 1920x1080 memory", 960, 1080, 24151, 960),
-    ("1440p60 in (dual-pixel), 1600x1200 memory", 800, 1200, 24151, 640),
-    ("1440p60 in (dual-pixel), 2560x1092 memory", 1280, 1092, 24151, 960),
-    ("1440p60 in (dual-pixel), 2560x1093 memory", 1280, 1093, 24151, 640),
-    ("1080p60 in (single-pixel), 1920x1080 memory", 1920, 1080, 14850, 960),
-    ("4K60 4:2:0 in, halved to 1920x1080 (single-pixel)", 1920, 1080, 14838, 960),
-    ("1080p60 in, 640x480 memory", 640, 480, 14850, 960),
-    ("1920x1200@60 in (single-pixel), 1920x1200 memory", 1920, 1200, 15400, 960),
-    ("1600x1200@60 in (single-pixel), 1600x1200 memory", 1600, 1200, 16200, 960),
-    ("2560x1440@30 in (single-pixel), 2560x1440 memory", 2560, 1440, 11980, 1280),
+    # (description, stored width (register 0xf660), stored height, input pixel clock in 10 kHz, expected pitch)
+    # Cases with more than 1092 lines at 170 MHz or less only check the routine's arithmetic;
+    # those images do not fit the frame memory (see the README).
+    ("1440p60 in (above 170 MHz, width halved), 1280x1440 stored", 1280, 1440, 24151, 640),
+    ("1440p60 in (above 170 MHz, width halved), 1920x1080 stored", 960, 1080, 24151, 960),
+    ("1440p60 in (above 170 MHz, width halved), 1600x1200 stored", 800, 1200, 24151, 640),
+    ("1440p60 in (above 170 MHz, width halved), x1092 stored", 1280, 1092, 24151, 960),
+    ("1440p60 in (above 170 MHz, width halved), x1093 stored", 1280, 1093, 24151, 640),
+    ("1080p60 in (170 MHz or less), 1920x1080 stored", 1920, 1080, 14850, 960),
+    ("4K60 4:2:0 in, halved to 1920x1080 (170 MHz or less)", 1920, 1080, 14838, 960),
+    ("1080p60 in, 640x480 stored", 640, 480, 14850, 960),
+    ("1920x1200@60 in (170 MHz or less), 1920x1200 stored", 1920, 1200, 15400, 960),
+    ("1600x1200@60 in (170 MHz or less), 1600x1200 stored", 1600, 1200, 16200, 960),
+    ("2560x1440@30 in (170 MHz or less), stored", 2560, 1440, 11980, 1280),
     ("width 1922 single-pixel (just over the stock pitch)", 1922, 1080, 14850, 961),
-    ("pixel clock exactly 170.00 MHz, tall memory -> single-pixel", 1280, 1440, 0x4268, 960),
-    ("pixel clock 170.01 MHz, tall memory -> dual-pixel", 1280, 1440, 0x4269, 640),
+    ("pixel clock exactly 170.00 MHz, tall memory -> not halved", 1280, 1440, 0x4268, 960),
+    ("pixel clock 170.01 MHz, tall memory -> halved", 1280, 1440, 0x4269, 640),
 ]
 
 

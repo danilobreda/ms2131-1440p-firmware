@@ -65,6 +65,9 @@ Short version; the measurements are in [docs/details.md](docs/details.md#real-14
 - **Lock-in.** When a capture starts, the tear line can show for a second or two while the genlock pulls
   the phase into place. The genlock is tuned for a 59.94 Hz source (PS5). It can follow sources between about
   59.86 and 60.02 Hz.
+- **Thin cut at the bottom edge.** In fast motion a cut can still show now and then in the last rows of the
+  picture. With this timing the phase range that keeps the cut fully outside the picture is only ~0.1 ms
+  wide, and the lock moves by about that much.
 - **Stock output watchdog off in this mode.** If the output ever stalls, close and reopen the capture.
 - **YUY2 only.** The routine checks the UVC format index and does nothing for MJPEG (format 1). MJPEG at
   2560x1440 was not tested: DirectShow on the test machine always negotiated YUY2.

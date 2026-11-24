@@ -85,14 +85,68 @@ while running works: N = 140 with P = 5 (168 MHz) first, then P = 4 (210 MHz, VC
 
 A routine at ROM `0xf8ba`, called from the main loop in place of `lcall 0xda4b` at ROM `0x53df`. It does
 nothing unless input = 2560x1440 (`0x22b8`), output = 2560x1440 (`0x22de`), format = YUY2 (IRAM `0x30` = 2;
-MJPEG is format 1) and the stream runs (`0xf007` & 3 = 3). Then, if any of ten registers differs from the
-target, it raises PLL2 to 210 MHz (once) and writes: single buffer, pre-scaler 1:1 + strobe, line pitch
-2560, output scaler 1:1 reading 2560 columns, output pixel clock 120 MHz, htotal 2760, vtotal 1451
-(29.96 fps) + strobe. In any other mode it restores the two stock buffers. Boot is untouched, so the DRAM is
-still trained at 180 MHz and USB/HID behave as stock.
+MJPEG is format 1) and the stream runs (`0xf007` & 3 = 3). Then, if any of nine registers differs from the
+target, it raises PLL2 to 210 MHz (once) and writes:
+- single buffer;
+- pre-scaler 1:1 + strobe;
+- line pitch 2560;
+- output scaler 1:1 reading 2560 columns;
+- output pixel clock 120 MHz, htotal 2733, vtotal 1465 (29.971 fps) + strobe.
 
-Result on a PS5 Pro at 1440p60: the interpolation test below gives 0.99 on both axes (stock patch: 0.17
-horizontally), 29.96 fps, 197 of 197 frames clean over 3 minutes.
+Once that is in place it runs the genlock below on every pass of the main loop. In any other mode it
+restores the two stock buffers. Boot is untouched, so the DRAM is still trained at 180 MHz and USB/HID behave
+as stock.
+
+The stock output watchdog (ROM `0x9be5`) is patched with a `ljmp` to a check: in this mode it is skipped,
+in every other mode it runs unchanged. The watchdog re-strobes `0xf620`. If the previous strobe has not been
+consumed, it polls `0xf041` and then calls a pipeline restart (`0xe4fb`, counted in IRAM `0x48`).
+
+Result on a PS5 Pro at 1440p60: the interpolation test below gives 0.98–0.99 on both axes (stock patch:
+0.17 horizontally), 29.97 fps, no tear line.
+
+### Tearing and genlock
+
+With one buffer the writer (60 Hz, 2560 columns in 16.2 ms) and the reader (30 Hz, 2560 columns in 32.8 ms)
+work on the same memory. Every output frame the writer starts a new input frame and overtakes the reader
+somewhere: above that line the picture is one input frame, below it the next one. With free-running clocks
+that line rolls slowly through the picture.
+
+The first real-1440p build read at 29.9629 fps against a 59.93944 Hz input (measured on a PS5 Pro), 226 ppm
+too slow. The line went round once every ~85 s.
+
+The fix has three parts:
+
+1. **Rate.** htotal 2733 × vtotal 1465 at 120 MHz is 29.97119 fps, within ~2 ppm of half the input rate.
+   A smaller htotal makes the reader faster, but the stream froze at 2620.
+2. **Phase signals the firmware can see.**
+   - `0xe160` bit 0 toggles at every input frame. It is the write-buffer index of the double-buffer
+     manager; it repeats now and then when the other buffer is being read.
+   - `0xf1ac` adds `0x68` at every output frame.
+   - No readable line counter or input VSYNC flag was found in `0xd000–0xd0ff`, `0xe000–0xe3ff` or
+     `0xf000–0xf8ff`, and the 8051 timers do not run.
+   - The firmware therefore counts main-loop passes (~8000 per second, ~135 per input frame) between the two
+     events.
+3. **Control.**
+   - Each output frame, d = passes since the last input edge, compared with a target. vtotal becomes
+     1463 / 1465 / 1467 when the error leaves a ±1 half-pass dead band.
+   - On the card the phase holds within about ±0.4 ms. The tear sits outside the picture.
+   - The new vtotal is written ~10 passes (~1.2 ms) after the decision. Written at once, a shorter vtotal
+     could land after the line counter had passed it; the counter then ran on to its maximum, which gave a
+     frame of up to ~1.5 s and a visible freeze.
+   - The genlock state lives in unused XDATA at `0x5c00` and is reset on every mode entry:
+
+     | Offset | Meaning |
+     |---|---|
+     | +4 | Passes per input frame |
+     | +5 | Target, /256 |
+     | +6 | Dead band |
+     | +7 | Step |
+     | +8 | Enable |
+     | +11 | Last error |
+     | +12 | Last d |
+     | +0x40 | Log of 64 d values |
+
+     These values can be changed live over HID.
 
 ## Evidence that the 1440p frames are half-width
 
@@ -222,6 +276,13 @@ Registers in `0xf600–0xf61f` are shadows: they take effect when bit 0 of `0xf6
 | `0xf006` | Output pixel clock = 480 MHz / (value + 1) |
 | `0xd120..0xd12b` | PLL2 (DRAM clock) |
 | IRAM `0x30` (read with `B5 00 30`) | Current UVC format index: 1 = MJPEG, 2 = YUY2 |
+| `0xe160` bit 0 | Write-buffer index; toggles at every input frame (sometimes repeats) |
+| `0xf1ac` | Adds `0x68` at every output frame |
+| `0xf134` bit 7, `0xf040` | ~0.5 ms pulse at the start of every output frame |
+| `0xf620` bit 0 | Clears when the output timing strobe is consumed (once per output frame) |
+| IRAM `0x29:0x2a` | Output frames counted by the EX1 interrupt, reset every second by the Timer 1 interrupt |
+| IRAM `0x48` | Number of output-pipeline restarts by the stock watchdog |
+| XDATA `0x5000–0x5fff` | Unused RAM (no references in the firmware) |
 
 ## Sharpening
 

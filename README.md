@@ -4,8 +4,8 @@ Firmware patch and reverse-engineering notes for HDMI → USB 3.0 capture cards 
 **MacroSilicon MS2131** (`345F:2131`).
 
 With a 2560x1440@60 source, the **real 1440p** firmware delivers **2560x1440 with real pixels on both axes
-at 29.96 fps** (YUY2). The stock firmware tops out at 1920x1080, and its "4K" mode is an upscaled 1080p
-picture.
+at 29.97 fps** (YUY2), without a tear line. The stock firmware tops out at 1920x1080, and its "4K" mode is an
+upscaled 1080p picture.
 
 ![Previous 1440p patch vs real 1440p, 3x crop](images/real_vs_interpolated_3x.png)
 
@@ -23,7 +23,7 @@ Full frame: [images/capture_2560x1440_real.png](images/capture_2560x1440_real.pn
 
 | Source | Stock firmware | 1440p patch (old) | **Real 1440p patch** |
 |---|---|---|---|
-| 2560x1440 @ 60, capture 2560x1440 YUY2 | — (no such mode) | 1280x1440 | **2560x1440, 29.96 fps** |
+| 2560x1440 @ 60, capture 2560x1440 YUY2 | — (no such mode) | 1280x1440 | **2560x1440, 29.97 fps** |
 | 2560x1440 @ 60, capture 2560x1440 MJPEG | — | 1280x1440 | not tested (routine does not act) |
 | 3840x2160 @ 60 | 1920x1080 | 1920x1080 | 1920x1080 |
 | 1920x1080 @ 60 | 1920x1080 | 1920x1080 | 1920x1080 |
@@ -35,7 +35,7 @@ same (ratio ≈ 1.0).
 | Capture (2560x1440 YUY2, PS5 Pro 1440p60) | Horizontal ratio | Vertical ratio |
 |---|---|---|
 | 1440p patch (old) | 0.17 | 0.99 |
-| Real 1440p patch | **0.99** | **0.99** |
+| Real 1440p patch | **0.98–0.99** | **0.99** |
 
 ## How it works
 
@@ -46,8 +46,15 @@ Short version; the measurements are in [docs/details.md](docs/details.md#real-14
 2. **No width halving.** The pre-scaler is set to 1:1, so all 2560 columns are stored instead of 1280.
 3. **Memory bandwidth.** Writing 2560 columns of a 1440p60 signal (about 241 Mpixel/s) leaves room for
    reading the frame out at only 80 MHz (19.6 fps). The firmware raises the internal DRAM clock from 180 to
-   **210 MHz**. That is enough to read at 120 MHz, which gives 29.96 fps.
-4. All of this happens in a small routine in the firmware main loop. It acts only when the input and the
+   **210 MHz**. That is enough to read at 120 MHz, which gives 29.97 fps.
+4. **No tear line (genlock).** With one buffer, the input writes a new frame while the output is still
+   reading the previous one. Where the writer passes the reader, the picture is cut into two frames, and
+   with free-running clocks that cut rolls through the picture. The firmware now:
+   - runs the output at half the input rate (29.971 fps for 59.94 Hz);
+   - watches the start of every input frame (`0xe160`) and every output frame (`0xf1ac`);
+   - stretches or shortens output frames by two lines to keep the cut outside the picture.
+   The stock output watchdog is skipped in this mode, because its restarts threw the phase off.
+5. All of this happens in a small routine in the firmware main loop. It acts only when the input and the
    capture are both 2560x1440 YUY2. Every other mode behaves like the 1440p patch, and boot is unchanged.
 
 ## Caveats
@@ -55,11 +62,13 @@ Short version; the measurements are in [docs/details.md](docs/details.md#real-14
 - **The DRAM runs 16.7% above the stock clock** once a 2560x1440 YUY2 capture starts, and stays there until
   the card is unplugged. The clock has no public documentation. It was tested on one card for minutes, not
   months. If you see the picture break up after the card warms up, flash back.
-- **Single buffer:** the output reads the buffer the input is writing. With fast motion a frame can contain
-  parts of two source frames (tearing).
+- **Lock-in.** When a capture starts, the tear line can show for a second or two while the genlock pulls
+  the phase into place. The genlock is tuned for a 59.94 Hz source (PS5). It can follow sources between about
+  59.86 and 60.02 Hz.
+- **Stock output watchdog off in this mode.** If the output ever stalls, close and reopen the capture.
 - **YUY2 only.** The routine checks the UVC format index and does nothing for MJPEG (format 1). MJPEG at
   2560x1440 was not tested: DirectShow on the test machine always negotiated YUY2.
-- The capture runs at 29.96 fps instead of 30.00. Capture software handles this fine.
+- The capture runs at 29.97 fps instead of 30.00. Capture software handles this fine.
 - Source must send 2560x1440 (for example PS5 set to 1440p).
 
 ## How to flash
@@ -91,7 +100,8 @@ backup is exactly:
 
 | File | What |
 |---|---|
-| `ms2131_real1440p30.bin` | **Real 1440p** (this README) |
+| `ms2131_real1440p30_genlock.bin` | **Real 1440p, no tearing** (this README, built by `tools/patch_real1440p.py`) |
+| `ms2131_real1440p30.bin` | Real 1440p, first version: 29.96 fps with a rolling tear line |
 | `ms2131_1440p30_nosharpen.bin` | Old 1440p patch, sharpening off (1280 real columns) |
 | `ms2131_1440p30.bin` | Old 1440p patch (1280 real columns) |
 

@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+# your own dumps, patched images and test captures stay out of the repository
+/*.bin
+/capture_*.png

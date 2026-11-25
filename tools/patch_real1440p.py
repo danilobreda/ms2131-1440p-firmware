@@ -23,6 +23,10 @@ Once the configuration is in place it runs one step of a GENLOCK per pass (~8000
   - 0xe160 bit 0 toggles at every input frame (write-buffer index) and 0xf1ac changes at every output
     frame; the routine counts main-loop passes between them to get the output phase inside the input
     frame, tracks the passes per input frame, and steers vtotal to 1463/1465/1467 to hold the phase;
+  - a reading counts only if an input edge was seen in the last 1.5 input frames; otherwise vtotal goes
+    back to 1465. 0xe160 sometimes skips toggles, and the pass counter saturates at 255, below two
+    input frames (~270 passes). While toggles were missing, the first genlock build read a constant
+    false phase (255 - P), held vtotal at 1467 and walked the tear line through the picture;
   - the new vtotal is written ~10 passes (~1.2 ms) after the decision, so the output line counter has
     already wrapped and can never run past a shorter vtotal (that produced ~1 s frames);
   - with a single frame buffer the writer is twice as fast as the reader; holding the phase keeps the
@@ -45,7 +49,7 @@ import patch_1440p  # noqa: E402
 HDR = 0x30
 STOCK_SHA = "45a74613c52727b3eae0aeec05a479a0b489e17254d15c2625f7f786be208134"
 BASE_SHA = "532d3d8dde5f85aa3acaeee413bc660d6cc81e934ff4d5ff76234ebda391c0c2"   # patch_1440p --no-sharpen
-RESULT_SHA = "cc9bd1dbf7ba6d68ce874481ab5fcca025472e06ec4613bb364a1c48efa998eb"
+RESULT_SHA = "5441711a25a4a1ea3486bc53b7353c4f90fa88bdc4b738a28f6cbd49d8710efb"
 BASE_LEN = 0xF8BA
 MAX_LEN = 0xFBA0          # largest code length seen in vendor MS2131 firmware
 CALL_SITE = 0x53DF        # lcall 0xda4b in the main loop
@@ -234,12 +238,15 @@ def emit_genlock(a):
     a.emit(0x02, DA4B >> 8, DA4B & 0xFF)
     a.label("GINIT0")
     a.emit(0x02, ("abs", "GINIT"))
+    a.label("INV")                                          # no input edge for >= 1.5 frames: the
+    a.emit(0x02, ("abs", "NOM"))                            # phase is unknown -> nominal vtotal
     a.label("OUT1")
     a.emit(0xEE, 0xF0)
     mov_dptr(a, G + 4)
-    a.emit(0xE0, 0xFD)                                      # d = CNT (mod P)
-    a.emit(0xEF, 0xC3, 0x9D, 0x40, ("rel", "DOK"))
-    a.emit(0xFF, 0xC3, 0x9D, 0x50, ("rel", "GEXIT"))
+    a.emit(0xE0, 0xFD)                                      # r5 = P
+    a.emit(0xEF, 0xC3, 0x9D, 0x40, ("rel", "DOK"))          # CNT < P: d = CNT
+    a.emit(0xFF, 0xED, 0x13)                                # r7 = CNT - P; a = P/2 (C = 0 here)
+    a.emit(0xD3, 0x9F, 0x40, ("rel", "INV"))                # CNT - P >= P/2 (also CNT saturated at 255)
     a.label("DOK")
     mov_dptr(a, G + 12)
     a.emit(0xEF, 0xF0)                                      # last phase reading

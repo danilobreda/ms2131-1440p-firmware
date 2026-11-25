@@ -52,7 +52,9 @@ Short version; the measurements are in [docs/details.md](docs/details.md#real-14
    with free-running clocks that cut rolls through the picture. The firmware now:
    - runs the output at half the input rate (29.971 fps for 59.94 Hz);
    - watches the start of every input frame (`0xe160`) and every output frame (`0xf1ac`);
-   - stretches or shortens output frames by two lines to keep the cut outside the picture.
+   - stretches or shortens output frames by two lines to keep the cut outside the picture;
+   - ignores a phase reading when no input frame edge was seen in the last 1.5 input frames, and keeps
+     the output at its nominal timing until the reference comes back.
    The stock output watchdog is skipped in this mode, because its restarts threw the phase off.
 5. All of this happens in a small routine in the firmware main loop. It acts only when the input and the
    capture are both 2560x1440 YUY2. Every other mode behaves like the 1440p patch, and boot is unchanged.
@@ -103,7 +105,8 @@ backup is exactly:
 
 | File | What |
 |---|---|
-| `ms2131_real1440p30_genlock.bin` | **Real 1440p, no tearing** (this README, built by `tools/patch_real1440p.py`) |
+| `ms2131_real1440p30_genlock_v2.bin` | **Real 1440p, no tearing** (this README, built by `tools/patch_real1440p.py`) |
+| `ms2131_real1440p30_genlock.bin` | First genlock version: now and then a tear line walked through the middle of the picture for a few seconds |
 | `ms2131_real1440p30.bin` | Real 1440p, first version: 29.96 fps with a rolling tear line |
 | `ms2131_1440p30_nosharpen.bin` | Old 1440p patch, sharpening off (1280 real columns) |
 | `ms2131_1440p30.bin` | Old 1440p patch (1280 real columns) |

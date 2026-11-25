@@ -130,6 +130,16 @@ The fix has three parts:
    - Each output frame, d = passes since the last input edge, compared with a target. vtotal becomes
      1463 / 1465 / 1467 when the error leaves a ±1 half-pass dead band.
    - On the card the phase holds within about ±0.4 ms. The tear sits outside the picture.
+   - A reading is used only if an input edge was seen in the last 1.5 input frames (d = CNT, or CNT − P
+     after one missed edge). Otherwise vtotal goes back to 1465 and nothing is corrected. Free-running at
+     1465 the phase moves by only a few ppm.
+   - The first genlock build (`ms2131_real1440p30_genlock.bin`) lacked that check. CNT saturates at 255,
+     below two input frames (P ≈ 135 → 2P ≈ 270). When `0xe160` skipped toggles, every output frame read
+     d = 255 − P (≈ −15 passes), whatever the real phase. vtotal stayed at 1467, the phase walked
+     ~1.36 ms/s and the tear line crossed the picture until the toggles came back. The isolated
+     "−15 pass" readings seen in its log were the same artefact. In an 8051 emulator and a closed-loop
+     simulation (input edges frozen for 0.2–10 s), the old build tore in the middle in 10–37% of the
+     frames and the new one in none. Every valid reading gives the same decision as before.
    - The new vtotal is written ~10 passes (~1.2 ms) after the decision. Written at once, a shorter vtotal
      could land after the line counter had passed it; the counter then ran on to its maximum, which gave a
      frame of up to ~1.5 s and a visible freeze.

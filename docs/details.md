@@ -140,6 +140,19 @@ The fix has three parts:
      "−15 pass" readings seen in its log were the same artefact. In an 8051 emulator and a closed-loop
      simulation (input edges frozen for 0.2–10 s), the old build tore in the middle in 10–37% of the
      frames and the new one in none. Every valid reading gives the same decision as before.
+   - The second build (`ms2131_real1440p30_genlock_v2.bin`) went back to 1465 on every frame without a
+     valid reading. After about an hour on the test card a tear line sat ~28% from the top. The state
+     read over HID showed error −18 half passes (−4.45 ms, the screenshot gives −4.7 ms), valid readings
+     only now and then (`0xe160` toggles rarely away from the lock point), and each correction undone on
+     the next frame; the error shrank by ~8 passes in 64 readings. What moved the phase there is not
+     known.
+   - Current build: each valid reading also sets HOLD = 4 × min(|error|, |previous error|) when both
+     have the same sign, else 0 (`+12`). A frame without a valid reading keeps the last vtotal while HOLD
+     counts down, then goes back to 1465. A frame at 1463/1467 moves the phase by 0.184 half pass, so
+     this corrects ~74% of the error between readings; one bad reading alone holds nothing. With a
+     reading on every frame (locked) it decides exactly like before. In the closed-loop simulation
+     (sparse `0xe160` away from the lock, realistic main-loop jitter) a −4.5 ms upset recovered in ~3.5 s
+     instead of 17–22 s or never, and no earlier scenario got worse.
    - The new vtotal is written ~10 passes (~1.2 ms) after the decision. Written at once, a shorter vtotal
      could land after the line counter had passed it; the counter then ran on to its maximum, which gave a
      frame of up to ~1.5 s and a visible freeze.
@@ -152,8 +165,8 @@ The fix has three parts:
      | +6 | Dead band |
      | +7 | Step |
      | +8 | Enable |
-     | +11 | Last error |
-     | +12 | Last d |
+     | +11 | Last error (half passes) |
+     | +12 | HOLD (frames) |
      | +0x40 | Log of 64 d values |
 
      These values can be changed live over HID.

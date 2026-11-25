@@ -23,10 +23,16 @@ Once the configuration is in place it runs one step of a GENLOCK per pass (~8000
   - 0xe160 bit 0 toggles at every input frame (write-buffer index) and 0xf1ac changes at every output
     frame; the routine counts main-loop passes between them to get the output phase inside the input
     frame, tracks the passes per input frame, and steers vtotal to 1463/1465/1467 to hold the phase;
-  - a reading counts only if an input edge was seen in the last 1.5 input frames; otherwise vtotal goes
-    back to 1465. 0xe160 sometimes skips toggles, and the pass counter saturates at 255, below two
-    input frames (~270 passes). While toggles were missing, the first genlock build read a constant
-    false phase (255 - P), held vtotal at 1467 and walked the tear line through the picture;
+  - a reading counts only if an input edge was seen in the last 1.5 input frames. 0xe160 sometimes
+    skips toggles, and the pass counter saturates at 255, below two input frames (~270 passes). While
+    toggles were missing, the first genlock build read a constant false phase (255 - P), held vtotal
+    at 1467 and walked the tear line through the picture;
+  - a valid reading also sets HOLD = 4 x min(|error|, |previous error|) when both have the same sign
+    (else 0). An output frame without a valid reading keeps the last vtotal while HOLD > 0 (counting it
+    down), then goes back to 1465. Away from the lock 0xe160 toggles only now and then; the second
+    genlock build went back to 1465 at once, undid each correction, and a tear line near the top could
+    stay for minutes. Each frame at 1463/1467 moves the phase 45.5 us = 0.184 half-pass, so 4 frames
+    per half-pass correct ~74% of the error; one bad reading alone holds nothing;
   - the new vtotal is written ~10 passes (~1.2 ms) after the decision, so the output line counter has
     already wrapped and can never run past a shorter vtotal (that produced ~1 s frames);
   - with a single frame buffer the writer is twice as fast as the reader; holding the phase keeps the
@@ -36,8 +42,9 @@ if the strobe is not consumed; in this mode it is skipped (in every other mode i
 In any other mode the routine restores the two stock frame buffers. PLL2 stays at 210 MHz until unplug.
 
 Genlock state lives in unused XDATA at 0x5c00 (reset on every mode entry): +4 passes per input frame,
-+5 target phase (/256, default 0), +6 dead band, +7 step, +8 enable, +11 last error, +12 last phase,
-+0x40..0x7f log of the last 64 phase readings.
++5 target phase (/256, default 0), +6 dead band, +7 step, +8 enable, +9 log index, +10 decided vtotal
+(low byte), +11 last error (half passes, signed), +12 HOLD, +0x40..0x7f log of the last 64 valid phase
+readings (passes since the input edge).
 """
 import hashlib
 import os
@@ -49,7 +56,7 @@ import patch_1440p  # noqa: E402
 HDR = 0x30
 STOCK_SHA = "45a74613c52727b3eae0aeec05a479a0b489e17254d15c2625f7f786be208134"
 BASE_SHA = "532d3d8dde5f85aa3acaeee413bc660d6cc81e934ff4d5ff76234ebda391c0c2"   # patch_1440p --no-sharpen
-RESULT_SHA = "5441711a25a4a1ea3486bc53b7353c4f90fa88bdc4b738a28f6cbd49d8710efb"
+RESULT_SHA = "8ffb43e7403344a8cabf6cb3146e485b0494401b6e395751a444d67f8ff37980"
 BASE_LEN = 0xF8BA
 MAX_LEN = 0xFBA0          # largest code length seen in vendor MS2131 firmware
 CALL_SITE = 0x53DF        # lcall 0xda4b in the main loop
@@ -59,6 +66,7 @@ G = 0x5C00                # genlock state (unused XDATA RAM)
 HT, VT = 2733, 1465
 GL_DEFAULTS = (137, 0x00, 1, 2, 1)   # passes per input frame, target, dead band, step, enable
 WRITE_DELAY = 10          # main-loop passes between the decision and the vtotal write
+DEFAULTS = (0x00, 0x00, 0x00) + GL_DEFAULTS + (0x00, VT & 0xFF, 0x00, 0x00, VT & 0xFF, 0x00, VT & 0xFF)  # G+1..+15
 
 TABLE = [(0xF584, 0xFF), (0xF585, 0xFF), (0xF586, 0x1F), (0xF594, 0x00), (0xF595, 0x00), (0xF596, 0x00),
          (0xF604, 0x00), (0xF605, 0x0A), (0xF606, 0x00), (0xF607, 0x0A), (0xF600, 0x01),
@@ -212,14 +220,14 @@ def emit_genlock(a):
     mov_dptr(a, G + 3)
     a.emit(0xE4, 0xF0)                                      # CNT = 0
     mov_dptr(a, G + 4)
-    a.emit(0xE0, 0xFD)                                      # r5 = P (passes per input frame)
+    a.emit(0xE0, 0xFD)                                      # r5 = P
     a.emit(0xC3, 0x13, 0xFC)                                # r4 = P/2
-    a.emit(0xED, 0xC3, 0x9C, 0xFB)                          # accept the interval only in P/2 .. 3P/2
-    a.emit(0xEF, 0xC3, 0x9B, 0x40, ("rel", "IN0"))
+    a.emit(0xED, 0xC3, 0x9C, 0xFB)                          # r3 = P - P/2 (no borrow: C = 0)
+    a.emit(0xEF, 0x9B, 0x40, ("rel", "IN0"))                # accept the interval only in P/2 .. 3P/2
     a.emit(0xED, 0x2C, 0x50, ("rel", "HOK"), 0x74, 0xFF)
     a.label("HOK")
-    a.emit(0xC3, 0x9F, 0x40, ("rel", "IN0"))                # (a missed edge gives ~2P)
-    a.emit(0xEF, 0xC3, 0x9D, 0x60, ("rel", "IN0"))
+    a.emit(0xC3, 0x9F, 0x40, ("rel", "IN0"))
+    a.emit(0xEF, 0x9D, 0x60, ("rel", "IN0"))                # (C = 0 after the jc above)
     a.emit(0x40, ("rel", "PDEC"))                           # track P by +-1
     a.emit(0x0D, 0x80, ("rel", "PST"))
     a.label("PDEC")
@@ -238,8 +246,11 @@ def emit_genlock(a):
     a.emit(0x02, DA4B >> 8, DA4B & 0xFF)
     a.label("GINIT0")
     a.emit(0x02, ("abs", "GINIT"))
-    a.label("INV")                                          # no input edge for >= 1.5 frames: the
-    a.emit(0x02, ("abs", "NOM"))                            # phase is unknown -> nominal vtotal
+    a.label("INVN")
+    a.emit(0x02, ("abs", "NOM"))
+    a.label("INV")                                          # no valid reading this output frame:
+    mov_dptr(a, G + 12)                                     # keep the last decision while HOLD > 0,
+    a.emit(0xE0, 0x60, ("rel", "INVN"), 0x14, 0xF0, 0x80, ("rel", "GEXIT"))   # then nominal vtotal
     a.label("OUT1")
     a.emit(0xEE, 0xF0)
     mov_dptr(a, G + 4)
@@ -248,31 +259,43 @@ def emit_genlock(a):
     a.emit(0xFF, 0xED, 0x13)                                # r7 = CNT - P; a = P/2 (C = 0 here)
     a.emit(0xD3, 0x9F, 0x40, ("rel", "INV"))                # CNT - P >= P/2 (also CNT saturated at 255)
     a.label("DOK")
-    mov_dptr(a, G + 12)
-    a.emit(0xEF, 0xF0)                                      # last phase reading
     mov_dptr(a, G + 9)
     a.emit(0xE0, 0xFB, 0x04, 0x54, 0x3F, 0xF0)
     a.emit(0xEB, 0x24, 0x40, 0xF5, 0x82, 0x75, 0x83, G >> 8, 0xEF, 0xF0)   # log[idx] = d
     mov_dptr(a, G + 8)
     a.emit(0xE0, 0x60, ("rel", "GEXIT"))                    # disabled
     mov_dptr(a, G + 5)
-    a.emit(0xE0, 0x8D, 0xF0, 0xA4, 0xAC, 0xF0)              # r4 = target * P / 256
-    a.emit(0xEF, 0xC3, 0x13, 0xFF)                          # work in half passes (fits 8-bit signed)
+    a.emit(0xE0, 0x8D, 0xF0, 0xA4, 0xAC, 0xF0)              # r4 = target * P / 256 (mul: C = 0)
+    a.emit(0xEF, 0x13, 0xFF)                                # work in half passes
     a.emit(0xEC, 0xC3, 0x13, 0xFC)
     a.emit(0xED, 0xC3, 0x13, 0xFD)
     a.emit(0xEF, 0xC3, 0x9C, 0xFB)                          # r3 = error
-    a.emit(0xED, 0xC3, 0x13, 0xFA)                          # wrap the error into -P/4 .. +P/4 (half units)
+    a.emit(0xED, 0xC3, 0x13, 0xFA)                          # wrap the error into -P/4 .. +P/4
     a.emit(0xEB, 0x64, 0x80, 0xF9)
     a.emit(0xEA, 0x24, 0x80, 0xF8)
     a.emit(0xE8, 0xC3, 0x99, 0x50, ("rel", "W1"))
     a.emit(0xEB, 0xC3, 0x9D, 0xFB, 0x80, ("rel", "W2"))
     a.label("W1")
-    a.emit(0x74, 0x80, 0xC3, 0x9A, 0xF8)
-    a.emit(0xE9, 0xC3, 0x98, 0x50, ("rel", "W2"))
+    a.emit(0x74, 0x80, 0x9A, 0xF8)                          # (C = 0 after jnc; 0x80 - P/4 has no borrow)
+    a.emit(0xE9, 0x98, 0x50, ("rel", "W2"))
     a.emit(0xEB, 0x2D, 0xFB)
     a.label("W2")
     mov_dptr(a, G + 11)
-    a.emit(0xEB, 0xF0)                                      # last error
+    a.emit(0xE0, 0xF9)                                      # r1 = previous error (last valid reading)
+    a.emit(0xEB, 0xF0)                                      # last error = error
+    a.emit(0x69, 0x20, 0xE7, ("rel", "H0"))                 # signs differ: HOLD = 0
+    a.emit(0xEB, 0xC3, 0x99, 0x6B)                          # bit 7 = sign(err - prev) xor sign(err)
+    a.emit(0x20, 0xE7, ("rel", "HX"))                       # set: err is the one closer to zero
+    a.emit(0xE9, 0x80, ("rel", "HA"))                       # else prev
+    a.label("HX")
+    a.emit(0xEB)
+    a.label("HA")
+    a.emit(0x30, 0xE7, 0x02, 0xF4, 0x04)                    # a = min(|err|, |prev|)
+    a.emit(0x23, 0x23, 0x80, ("rel", "HS"))                 # HOLD = 4 * min
+    a.label("H0")
+    a.emit(0xE4)
+    a.label("HS")
+    a.emit(0xA3, 0xF0)                                      # G+12
     mov_dptr(a, G + 6)
     a.emit(0xE0, 0xFA)                                      # r2 = dead band
     a.emit(0xEB, 0x64, 0x80, 0xF9)
@@ -282,7 +305,7 @@ def emit_genlock(a):
     mov_dptr(a, G + 13)
     a.emit(0xE0, 0xC3, 0x98, 0x80, ("rel", "SETV"))         # output late: shorter frames
     a.label("NL")
-    a.emit(0x74, 0x80, 0xC3, 0x9A, 0xF8)
+    a.emit(0x74, 0x80, 0x9A, 0xF8)                          # (C = 0 after jnc)
     a.emit(0xE9, 0xC3, 0x98, 0x50, ("rel", "NOM"))
     mov_dptr(a, G + 7)
     a.emit(0xE0, 0xF8)
@@ -290,7 +313,7 @@ def emit_genlock(a):
     a.emit(0xE0, 0x28, 0x80, ("rel", "SETV"))               # output early: longer frames
     a.label("NOM")
     mov_dptr(a, G + 13)
-    a.emit(0xE0)                                            # inside the dead band: nominal vtotal
+    a.emit(0xE0)                                            # nominal vtotal
     a.label("SETV")
     a.emit(0xF8)
     mov_dptr(a, G + 10)
@@ -302,21 +325,19 @@ def emit_genlock(a):
     a.emit(0x74, WRITE_DELAY, 0xF0)                         # write it WRITE_DELAY passes from now
     a.label("GEXIT2")
     a.emit(0x02, DA4B >> 8, DA4B & 0xFF)
-    a.label("GINIT")                                        # (re)initialise on every mode entry
-    mov_dptr(a, 0xE160)
-    a.emit(0xE0, 0x54, 0x01, 0xFF)
-    mov_dptr(a, G + 1)
-    a.emit(0xEF, 0xF0)
-    mov_dptr(a, 0xF1AC)
-    a.emit(0xE0, 0xFF)
-    mov_dptr(a, G + 2)
-    a.emit(0xEF, 0xF0)
-    a.emit(0xA3, 0xE4, 0xF0)                                # +3 CNT = 0
-    for v in GL_DEFAULTS + (0x00, VT & 0xFF, 0x00, 0x00, VT & 0xFF, 0x00, VT & 0xFF):   # +4..+15
-        a.emit(0xA3, 0x74, v, 0xF0)
+    a.label("GINIT")                                        # (re)initialise on every mode entry: +1..+15
+    a.emit(0x7D, 0x00)                                      # from DEF (+1/+2 = 0: the first pass may see
+    a.label("GI1")                                          # one input and one output edge, d ~ 0, err 0)
+    a.emit(0x90, ("abs", "DEF"))
+    a.emit(0xED, 0x93, 0xFE)
+    a.emit(0xED, 0x24, 0x01, 0xF5, 0x82, 0x75, 0x83, G >> 8)
+    a.emit(0xEE, 0xF0)
+    a.emit(0x0D, 0xBD, len(DEFAULTS), ("rel", "GI1"))
     mov_dptr(a, G)
     a.emit(0x74, 0xA7, 0xF0)
     a.emit(0x02, DA4B >> 8, DA4B & 0xFF)
+    a.label("DEF")
+    a.emit(*DEFAULTS)
 
 
 def emit_watchdog(a):
